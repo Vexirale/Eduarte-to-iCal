@@ -67,6 +67,21 @@ instead, so it never needs you:
 | `EDUARTE_PASSWORD` | to answer the password prompt |
 | `TOTP_SECRET` | only if the account uses authenticator-app 2FA |
 
+**About Microsoft Authenticator.** Its default "approve on your phone /
+type the matching number" prompt **cannot be automated** -- there is no
+secret to store, the approval happens on the device. But the same app
+also exposes a rotating 6-digit *verification code*, which is ordinary
+TOTP and does work here. To get its seed: **[mysignins.microsoft.com/security-info](https://mysignins.microsoft.com/security-info)**
+-> Add sign-in method -> Authenticator app -> "I want to use a different
+authenticator app" -> **"Can't scan image?"**, which prints the secret as
+text. That's the value for `TOTP_SECRET`.
+
+Microsoft normally *shows* the push prompt first, so with a TOTP secret
+set the login clicks through "I can't use my Microsoft Authenticator app
+right now" -> "Use a verification code" to reach the code field. If your
+school restricts MFA to push approval only, that option won't exist and
+the session-capture route is the only one available.
+
 The saved session is still tried first and normally covers everything;
 these are only touched when Microsoft actually asks. The login step is
 detected from whatever is on screen at the time (account tile, 2FA code,

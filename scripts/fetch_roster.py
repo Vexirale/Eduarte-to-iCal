@@ -125,7 +125,74 @@ def _visible(page, selector: str, timeout: int = 2500):
     return locator
 
 
-def sign_in(page, email: str | None, password: str | None, totp_secret: str | None) -> None:
+# Microsoft's own wording for "the app is asking you to approve on your phone".
+PUSH_PROMPT_TEXT = re.compile(
+    r"approve|goedkeur|open your|authenticator app|verifi(?:cation|catie)verzoek|"
+    r"enter the number|nummer",
+    re.I,
+)
+# The escape hatch on that screen, and the option to pick once it opens.
+OTHER_WAY_SELECTORS = "#idA_PWD_SwitchToCredPicker, #signInAnotherWay"
+OTHER_WAY_TEXT = re.compile(
+    r"can't use|kan .*niet gebruiken|another way|andere manier|different (?:method|way)",
+    re.I,
+)
+VERIFICATION_CODE_TEXT = re.compile(
+    r"verification code|verificatiecode|use a code|code from",
+    re.I,
+)
+
+
+def _looks_like_push_prompt(page) -> bool:
+    """True when the screen is an approve-on-your-phone prompt, not a form."""
+    if _visible(page, 'input[name="otc"], input[type="password"]', timeout=600):
+        return False
+    try:
+        body = page.inner_text("body", timeout=2000)
+    except PlaywrightTimeout:
+        return False
+    return bool(PUSH_PROMPT_TEXT.search(body))
+
+
+def _click_first(page, *candidates) -> bool:
+    """Click the first candidate that's actually there. Each is a callable."""
+    for candidate in candidates:
+        try:
+            locator = candidate()
+            locator.wait_for(state="visible", timeout=1500)
+            locator.click()
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _switch_to_verification_code(page) -> bool:
+    """Get from the push prompt to the 'enter a code' field.
+
+    Two clicks in Microsoft's UI: an escape-hatch link, then picking the
+    verification-code option from the list it opens. Selectors are matched
+    both by id and by wording (English and Dutch) because the id names have
+    moved around over the years and the portal renders in Dutch here.
+    """
+    opened = _click_first(
+        page,
+        lambda: page.locator(OTHER_WAY_SELECTORS).first,
+        lambda: page.get_by_role("link", name=OTHER_WAY_TEXT).first,
+        lambda: page.get_by_text(OTHER_WAY_TEXT).first,
+    )
+    if not opened:
+        return False
+    page.wait_for_load_state("networkidle")
+
+    return _click_first(
+        page,
+        lambda: page.get_by_text(VERIFICATION_CODE_TEXT).first,
+        lambda: page.get_by_role("button", name=VERIFICATION_CODE_TEXT).first,
+    )
+
+
+def sign_in(page, email: str | None, password: str | None, totp_secret: str | None) -> str | None:
     """Complete whichever login steps Microsoft actually asks for.
 
     The flow isn't a fixed sequence: depending on what the saved session
@@ -133,6 +200,9 @@ def sign_in(page, email: str | None, password: str | None, totp_secret: str | No
     code), only some of it, or nothing at all. So rather than marching
     through fixed steps, look at what's on screen each time round and
     handle just that -- the same approach reneax/eduarte-bot uses.
+
+    Returns None on success, or a string explaining what it got stuck on, so
+    the caller can say something more useful than "still on the login page".
     """
     for _ in range(15):
         if SIGNED_IN_URL.search(page.url):
@@ -160,6 +230,30 @@ def sign_in(page, email: str | None, password: str | None, totp_secret: str | No
             page.keyboard.press("Enter")
             page.wait_for_load_state("networkidle")
             continue
+
+        # Microsoft usually defaults to a push / number-match prompt ("Approve
+        # sign-in request"), which a script fundamentally cannot answer -- that
+        # approval happens on the phone. If a TOTP secret is configured, switch
+        # over to the "enter a verification code" option, which lands on the
+        # otc field handled above.
+        if _looks_like_push_prompt(page):
+            hint = (
+                "Microsoft is asking for approval in the Authenticator app. That "
+                "can't be automated -- approval happens on your phone. "
+            )
+            hint += (
+                "Set TOTP_SECRET (Authenticator also shows a 6-digit verification "
+                "code; get its seed at mysignins.microsoft.com/security-info by "
+                "adding a 'different authenticator app' and using \"Can't scan "
+                "image?\" to read the secret)."
+                if not totp_secret
+                else "Tried to switch to the verification-code option and could "
+                "not find it -- the account may be restricted to push approval."
+            )
+            if totp_secret and _switch_to_verification_code(page):
+                page.wait_for_load_state("networkidle")
+                continue
+            return hint
 
         pwd = _visible(page, 'input[type="password"]', timeout=1200)
         if pwd:
@@ -254,10 +348,11 @@ def build_session() -> requests.Session:
             page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60000)
 
             # The silent SSO hop can take a couple of redirects to settle.
+            hint = None
             try:
                 page.wait_for_url(SIGNED_IN_URL, timeout=20000)
             except PlaywrightTimeout:
-                sign_in(page, email, password, totp_secret)
+                hint = sign_in(page, email, password, totp_secret)
 
             page.wait_for_load_state("networkidle")
             final_url = page.url
@@ -269,11 +364,14 @@ def build_session() -> requests.Session:
 
     if any(host in final_url for host in LOGIN_HOSTS):
         die(
-            "Sign-in did not complete -- still stuck on the login page. If no "
-            "credentials are configured, set EDUARTE_EMAIL / EDUARTE_PASSWORD "
-            "(and TOTP_SECRET if 2FA is on); otherwise Microsoft may be "
-            "challenging this sign-in, and a fresh capture_session.py run plus "
-            "an updated EDUARTE_SESSION_STATE is the way back in."
+            hint
+            or (
+                "Sign-in did not complete -- still stuck on the login page. If no "
+                "credentials are configured, set EDUARTE_EMAIL / EDUARTE_PASSWORD "
+                "(and TOTP_SECRET if 2FA is on); otherwise Microsoft may be "
+                "challenging this sign-in, and a fresh capture_session.py run plus "
+                "an updated EDUARTE_SESSION_STATE is the way back in."
+            )
         )
 
     session = requests.Session()
