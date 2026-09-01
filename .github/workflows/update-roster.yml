@@ -31,8 +31,8 @@ jobs:
         run: |
           git config user.name "eduarte-to-ical bot"
           git config user.email "actions@users.noreply.github.com"
-          if ! git diff --quiet -- docs/roster.ics; then
-            git add docs/roster.ics
+          git add docs/roster.ics
+          if ! git diff --cached --quiet -- docs/roster.ics; then
             git commit -m "Update roster.ics"
             git push
           else
