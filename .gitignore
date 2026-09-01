@@ -1,0 +1,5 @@
+session_state.json
+debug_capture.json
+__pycache__/
+*.pyc
+.venv/

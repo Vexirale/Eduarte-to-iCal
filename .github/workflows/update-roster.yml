@@ -1,0 +1,40 @@
+name: Update roster.ics
+
+on:
+  schedule:
+    # 05:00 UTC = 07:00 CEST / 06:00 CET, before the school day starts
+    - cron: "0 5 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests icalendar beautifulsoup4
+
+      - name: Fetch roster and build roster.ics
+        env:
+          EDUARTE_SESSION_STATE: ${{ secrets.EDUARTE_SESSION_STATE }}
+        run: python scripts/fetch_roster.py
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "eduarte-to-ical bot"
+          git config user.email "actions@users.noreply.github.com"
+          if ! git diff --quiet -- docs/roster.ics; then
+            git add docs/roster.ics
+            git commit -m "Update roster.ics"
+            git push
+          else
+            echo "No changes to roster.ics"
+          fi
