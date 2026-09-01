@@ -54,9 +54,31 @@ runs over plain HTTP as before.
 
 The practical effect: one capture should last until the Microsoft
 persistent cookie expires (on the order of ~90 days) rather than hours.
-When even that expires, the run fails on purpose instead of silently
-going stale -- GitHub shows the run red / emails you, and that's your
-signal to redo step 1.
+
+### Optional: let it recover on its own
+
+With only a saved session, an expiry means a red run and a manual
+re-capture. Set these extra secrets and the job signs itself back in
+instead, so it never needs you:
+
+| secret | needed? |
+|---|---|
+| `EDUARTE_EMAIL` | to answer "who's signing in" |
+| `EDUARTE_PASSWORD` | to answer the password prompt |
+| `TOTP_SECRET` | only if the account uses authenticator-app 2FA |
+
+The saved session is still tried first and normally covers everything;
+these are only touched when Microsoft actually asks. The login step is
+detected from whatever is on screen at the time (account tile, 2FA code,
+password, email) rather than assuming a fixed sequence, since how far the
+saved session gets varies.
+
+Trade-off worth being deliberate about: `EDUARTE_PASSWORD` is your whole
+school Microsoft account, not just this timetable. Without it the worst
+case is a red run and five minutes of re-capturing.
+
+If sign-in can't complete, the run fails on purpose instead of silently
+going stale -- GitHub shows the run red / emails you.
 
 ## One-time setup
 
