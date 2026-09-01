@@ -130,7 +130,12 @@ def parse_week(html: str, current_url: str) -> tuple[list[Lesson], str | None]:
     datum_input = soup.find("input", attrs={"name": "filter:datum"})
     if datum_input is None or not datum_input.get("value"):
         die("Could not find the 'filter:datum' field -- the page layout may have changed.")
-    week_start: date = datetime.strptime(datum_input["value"], "%d-%m-%Y").date()
+    # 'filter:datum' is only Monday-aligned after paging forward/back at least
+    # once -- on the initial (current-week) page it holds *today's* date
+    # instead, whatever weekday that is. Derive Monday from its weekday so
+    # both cases line up with the 7 day columns.
+    filter_date = datetime.strptime(datum_input["value"], "%d-%m-%Y").date()
+    week_start: date = filter_date - timedelta(days=filter_date.weekday())
 
     axis_span = soup.select_one(".agenda--time li span")
     if axis_span is None:
