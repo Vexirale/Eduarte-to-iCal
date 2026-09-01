@@ -35,10 +35,28 @@ the same links the site's own "next week" button uses.
    (re)writes `docs/roster.ics`. GitHub Pages serves that file at a stable
    URL your calendar app subscribes to and refreshes on its own schedule.
 
-When the saved session eventually expires (Educus bounces it back to the
-Microsoft login page), the daily workflow run fails on purpose instead of
-silently going stale -- GitHub will show the run as red / email you, and
-that's your signal to redo step 1.
+### Why the scheduled run needs a browser too
+
+Educus' own session cookie is a server-side session with a short idle
+timeout -- measured, it dies within a few hours of not being used, so
+between two scheduled runs it's always dead. The Microsoft half of the
+login is the durable part: its persistent auth cookie lasts months.
+
+So `fetch_roster.py` doesn't replay the saved cookies directly. It hands
+them to a headless browser and lets it redo the OAuth/SAML handshake,
+which completes **silently** -- no password, no MFA prompt -- because
+Microsoft still considers the account signed in. It has to be a real
+browser: that handoff is driven by Microsoft's client-side JavaScript,
+and replaying it over plain HTTP just bounces between redirects forever
+(verified -- it loops on `/reprocess` indefinitely). Once through, the
+browser's fresh cookies are handed to `requests` and the actual scrape
+runs over plain HTTP as before.
+
+The practical effect: one capture should last until the Microsoft
+persistent cookie expires (on the order of ~90 days) rather than hours.
+When even that expires, the run fails on purpose instead of silently
+going stale -- GitHub shows the run red / emails you, and that's your
+signal to redo step 1.
 
 ## One-time setup
 

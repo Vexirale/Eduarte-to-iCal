@@ -23,10 +23,12 @@ displayed week's Monday is available as the "filter:datum" field so day
 dates don't need to be guessed from abbreviated, year-less text like
 "ma 7 sep".
 
-If the saved session has expired, the site redirects to its Microsoft
-login page. We treat that as a hard failure (non-zero exit) rather than
-silently producing an empty/stale calendar, so the scheduled workflow shows
-up red and you know it's time to re-run capture_session.py.
+Signing in is handled by a headless browser (see build_session) because
+the app's own session cookie only survives a few hours of inactivity,
+while the Microsoft side of the login stays valid for months. If even the
+Microsoft session is gone, we fail hard (non-zero exit) rather than
+silently producing an empty/stale calendar, so the scheduled workflow
+shows up red and you know it's time to re-run capture_session.py.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, time as dt_time, timedelta
 from pathlib import Path
@@ -45,6 +48,7 @@ from zoneinfo import ZoneInfo
 import requests
 from bs4 import BeautifulSoup
 from icalendar import Calendar, Event
+from playwright.sync_api import TimeoutError as PlaywrightTimeout, sync_playwright
 
 BASE_URL = "https://summacollege-student.educus.nl/agenda"
 LOGIN_HOSTS = ("login.educus.nl", "login.microsoftonline.com")
@@ -108,6 +112,23 @@ def die(msg: str) -> None:
 
 
 def build_session() -> requests.Session:
+    """Get a requests session that's actually logged in to Educus.
+
+    The app's own session cookie (JSESSIONID) is a server-side session with a
+    short idle timeout -- it dies within hours of not being used, so between
+    two scheduled runs it's always dead. The Microsoft side of the login,
+    though, stays valid for months (a persistent auth cookie).
+
+    So rather than replaying the saved cookies directly, we hand them to a
+    real headless browser and let it re-do the OAuth/SAML handshake. Because
+    Microsoft still considers the account signed in, that completes silently
+    with no password and no MFA prompt. It has to be a browser: the handoff
+    is driven by Microsoft's client-side JavaScript, and replaying it with
+    plain HTTP just bounces between redirects forever.
+
+    Once the browser is through, its fresh cookies are handed to requests and
+    the rest of the scrape runs over plain HTTP as before.
+    """
     raw = os.environ.get("EDUARTE_SESSION_STATE")
     if not raw:
         die(
@@ -115,12 +136,44 @@ def build_session() -> requests.Session:
             "locally and put session_state.json's contents into that secret."
         )
     try:
-        state = json.loads(raw)
+        json.loads(raw)
     except json.JSONDecodeError:
         die("EDUARTE_SESSION_STATE does not contain valid JSON.")
 
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+        handle.write(raw)
+        state_path = handle.name
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(storage_state=state_path)
+            page = context.new_page()
+            page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60000)
+
+            # The silent SSO hop can take a couple of redirects to settle.
+            try:
+                page.wait_for_url(re.compile(r"educus\.nl/agenda"), timeout=45000)
+            except PlaywrightTimeout:
+                pass
+            page.wait_for_load_state("networkidle")
+
+            final_url = page.url
+            cookies = context.cookies()
+            browser.close()
+    finally:
+        os.unlink(state_path)
+
+    if any(host in final_url for host in LOGIN_HOSTS):
+        die(
+            "Silent sign-in failed -- still sitting on the Microsoft login page. "
+            "The saved session has genuinely expired (or Microsoft wants a fresh "
+            "sign-in): re-run scripts/capture_session.py locally and update the "
+            "EDUARTE_SESSION_STATE secret."
+        )
+
     session = requests.Session()
-    for cookie in state["cookies"]:
+    for cookie in cookies:
         session.cookies.set(cookie["name"], cookie["value"], domain=cookie["domain"], path=cookie["path"])
     return session
 
