@@ -20,9 +20,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          playwright install --with-deps chromium
+        run: pip install requests icalendar beautifulsoup4
 
       - name: Fetch roster and build roster.ics
         env:
