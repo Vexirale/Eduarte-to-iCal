@@ -191,7 +191,33 @@ def fetch_lessons(session: requests.Session) -> list[Lesson]:
     return all_lessons
 
 
-def build_calendar(lessons: list[Lesson]) -> Calendar:
+def lesson_uid(lesson: Lesson) -> str:
+    # Deliberately excludes room: a lesson's identity is its subject + time
+    # slot, not where it happens to be held. Keeping the UID stable across a
+    # room change is what lets both a calendar app update the existing event
+    # in place (instead of dropping one and adding another) and this script
+    # detect the change by comparing against the previously published feed.
+    uid_source = f"{lesson.subject}|{lesson.start.isoformat()}|{lesson.end.isoformat()}"
+    return hashlib.sha1(uid_source.encode()).hexdigest() + "@eduarte-to-ical"
+
+
+def load_previous_locations(path: Path) -> dict[str, str | None]:
+    if not path.exists():
+        return {}
+    try:
+        previous = Calendar.from_ical(path.read_bytes())
+    except ValueError:
+        return {}
+
+    locations: dict[str, str | None] = {}
+    for component in previous.walk("VEVENT"):
+        uid = str(component.get("uid", ""))
+        location = component.get("location")
+        locations[uid] = str(location) if location else None
+    return locations
+
+
+def build_calendar(lessons: list[Lesson], previous_locations: dict[str, str | None]) -> Calendar:
     cal = Calendar()
     cal.add("prodid", "-//eduarte-to-ical//summacollege//")
     cal.add("version", "2.0")
@@ -200,17 +226,27 @@ def build_calendar(lessons: list[Lesson]) -> Calendar:
     cal.add("method", "PUBLISH")
 
     for lesson in lessons:
+        uid = lesson_uid(lesson)
+        previous_room = previous_locations.get(uid)
+        room_changed = bool(previous_room) and bool(lesson.room) and previous_room != lesson.room
+
         event = Event()
-        uid_source = f"{lesson.subject}|{lesson.room}|{lesson.start.isoformat()}|{lesson.end.isoformat()}"
-        event.add("uid", hashlib.sha1(uid_source.encode()).hexdigest() + "@eduarte-to-ical")
-        event.add("summary", lesson.subject)
+        event.add("uid", uid)
+        event.add("summary", f"⚠️ {lesson.subject}" if room_changed else lesson.subject)
         event.add("dtstart", lesson.start)
         event.add("dtend", lesson.end)
         event.add("dtstamp", datetime.now(tz=TZ))
         if lesson.room:
             event.add("location", lesson.room)
+
+        description_parts = []
+        if room_changed:
+            description_parts.append(f"Location changed: {previous_room} → {lesson.room}")
         if lesson.teacher:
-            event.add("description", f"Docent: {lesson.teacher}")
+            description_parts.append(f"Docent: {lesson.teacher}")
+        if description_parts:
+            event.add("description", "\n".join(description_parts))
+
         cal.add_component(event)
 
     return cal
@@ -227,7 +263,8 @@ def main() -> None:
             "changed since this scraper was written."
         )
 
-    calendar = build_calendar(lessons)
+    previous_locations = load_previous_locations(OUTPUT_PATH)
+    calendar = build_calendar(lessons, previous_locations)
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_bytes(calendar.to_ical())
     print(f"Wrote {len(lessons)} lessons to {OUTPUT_PATH}")

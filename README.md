@@ -2,7 +2,10 @@
 
 Turns your Summa College Eduarte timetable (subject, room, teacher, duration)
 into a calendar feed you can subscribe to from Google Calendar, Apple
-Calendar, or Outlook, refreshed daily.
+Calendar, or Outlook, refreshed twice a day. When a lesson's room changes
+between two fetches, that lesson gets a "⚠️" prefix and a "Location changed:
+was X, now Y" note for one cycle, so a last-minute room swap doesn't get lost
+in a page you weren't about to re-check.
 
 ## How it works
 
@@ -25,10 +28,10 @@ the same links the site's own "next week" button uses.
    `scripts/capture_session.py` opens locally. You handle the Microsoft
    login and any MFA prompt like you always do. The script then saves the
    resulting session.
-2. **A GitHub Actions workflow runs daily**, reuses that saved session
-   (no login needed), reads your timetable, and (re)writes `docs/roster.ics`.
-   GitHub Pages serves that file at a stable URL your calendar app
-   subscribes to and refreshes on its own schedule.
+2. **A GitHub Actions workflow runs twice daily** (08:25 and 11:00 CEST),
+   reuses that saved session (no login needed), reads your timetable, and
+   (re)writes `docs/roster.ics`. GitHub Pages serves that file at a stable
+   URL your calendar app subscribes to and refreshes on its own schedule.
 
 When the saved session eventually expires (Educus bounces it back to the
 Microsoft login page), the daily workflow run fails on purpose instead of
@@ -100,3 +103,13 @@ Re-run step 1 and update the `EDUARTE_SESSION_STATE` secret with the new
   thing to check if something looks wrong.
 - `WEEKS_AHEAD` (default 4) controls how many weeks out `roster.ics`
   covers; set it via a repo variable/env var if you want more or less.
+- Room-change detection compares each lesson's room against the
+  previously published `docs/roster.ics` (matched by subject + start/end
+  time, not by room, so a room change updates the same calendar event
+  instead of creating a duplicate). It only has one prior fetch to compare
+  against, so the "⚠️" note lasts exactly one cycle before clearing on its
+  own -- if you don't check your calendar between two fetches, you'd only
+  ever see the latest room, not the flag.
+- The twice-daily schedule is fixed UTC and doesn't shift for Dutch DST --
+  see the comment in `.github/workflows/update-roster.yml` if the run
+  times drift an hour after a clock change.
