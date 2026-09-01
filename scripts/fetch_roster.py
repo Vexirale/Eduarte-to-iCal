@@ -23,10 +23,12 @@ displayed week's Monday is available as the "filter:datum" field so day
 dates don't need to be guessed from abbreviated, year-less text like
 "ma 7 sep".
 
-If the saved session has expired, the site redirects to its Microsoft
-login page. We treat that as a hard failure (non-zero exit) rather than
-silently producing an empty/stale calendar, so the scheduled workflow shows
-up red and you know it's time to re-run capture_session.py.
+Signing in is handled by a headless browser (see build_session) because
+the app's own session cookie only survives a few hours of inactivity,
+while the Microsoft side of the login stays valid for months. If even the
+Microsoft session is gone, we fail hard (non-zero exit) rather than
+silently producing an empty/stale calendar, so the scheduled workflow
+shows up red and you know it's time to re-run capture_session.py.
 """
 
 from __future__ import annotations
@@ -36,15 +38,18 @@ import json
 import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, time as dt_time, timedelta
 from pathlib import Path
 from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
+import pyotp
 import requests
 from bs4 import BeautifulSoup
 from icalendar import Calendar, Event
+from playwright.sync_api import TimeoutError as PlaywrightTimeout, sync_playwright
 
 BASE_URL = "https://summacollege-student.educus.nl/agenda"
 LOGIN_HOSTS = ("login.educus.nl", "login.microsoftonline.com")
@@ -107,20 +112,270 @@ def die(msg: str) -> None:
     sys.exit(1)
 
 
-def build_session() -> requests.Session:
-    raw = os.environ.get("EDUARTE_SESSION_STATE")
-    if not raw:
-        die(
-            "EDUARTE_SESSION_STATE is not set. Run scripts/capture_session.py "
-            "locally and put session_state.json's contents into that secret."
-        )
+SIGNED_IN_URL = re.compile(r"educus\.nl/agenda")
+
+
+def _visible(page, selector: str, timeout: int = 2500):
+    """Return the locator if it's actually on screen right now, else None."""
+    locator = page.locator(selector).first
     try:
-        state = json.loads(raw)
-    except json.JSONDecodeError:
-        die("EDUARTE_SESSION_STATE does not contain valid JSON.")
+        locator.wait_for(state="visible", timeout=timeout)
+    except PlaywrightTimeout:
+        return None
+    return locator
+
+
+# Microsoft's own wording for "the app is asking you to approve on your phone".
+PUSH_PROMPT_TEXT = re.compile(
+    r"approve|goedkeur|open your|authenticator app|verifi(?:cation|catie)verzoek|"
+    r"enter the number|nummer",
+    re.I,
+)
+# The escape hatch on that screen, and the option to pick once it opens.
+OTHER_WAY_SELECTORS = "#idA_PWD_SwitchToCredPicker, #signInAnotherWay"
+OTHER_WAY_TEXT = re.compile(
+    r"can't use|kan .*niet gebruiken|another way|andere manier|different (?:method|way)",
+    re.I,
+)
+VERIFICATION_CODE_TEXT = re.compile(
+    r"verification code|verificatiecode|use a code|code from",
+    re.I,
+)
+
+
+def _looks_like_push_prompt(page) -> bool:
+    """True when the screen is an approve-on-your-phone prompt, not a form."""
+    if _visible(page, 'input[name="otc"], input[type="password"]', timeout=600):
+        return False
+    try:
+        body = page.inner_text("body", timeout=2000)
+    except PlaywrightTimeout:
+        return False
+    return bool(PUSH_PROMPT_TEXT.search(body))
+
+
+def _click_first(page, *candidates) -> bool:
+    """Click the first candidate that's actually there. Each is a callable."""
+    for candidate in candidates:
+        try:
+            locator = candidate()
+            locator.wait_for(state="visible", timeout=1500)
+            locator.click()
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _switch_to_verification_code(page) -> bool:
+    """Get from the push prompt to the 'enter a code' field.
+
+    Two clicks in Microsoft's UI: an escape-hatch link, then picking the
+    verification-code option from the list it opens. Selectors are matched
+    both by id and by wording (English and Dutch) because the id names have
+    moved around over the years and the portal renders in Dutch here.
+    """
+    opened = _click_first(
+        page,
+        lambda: page.locator(OTHER_WAY_SELECTORS).first,
+        lambda: page.get_by_role("link", name=OTHER_WAY_TEXT).first,
+        lambda: page.get_by_text(OTHER_WAY_TEXT).first,
+    )
+    if not opened:
+        return False
+    page.wait_for_load_state("networkidle")
+
+    return _click_first(
+        page,
+        lambda: page.get_by_text(VERIFICATION_CODE_TEXT).first,
+        lambda: page.get_by_role("button", name=VERIFICATION_CODE_TEXT).first,
+    )
+
+
+def sign_in(page, email: str | None, password: str | None, totp_secret: str | None) -> str | None:
+    """Complete whichever login steps Microsoft actually asks for.
+
+    The flow isn't a fixed sequence: depending on what the saved session
+    still covers, Microsoft may ask for everything (email, password, 2FA
+    code), only some of it, or nothing at all. So rather than marching
+    through fixed steps, look at what's on screen each time round and
+    handle just that -- the same approach reneax/eduarte-bot uses.
+
+    Returns None on success, or a string explaining what it got stuck on, so
+    the caller can say something more useful than "still on the login page".
+    """
+    for _ in range(15):
+        if SIGNED_IN_URL.search(page.url):
+            return
+
+        # Already-known account tile ("pick an account").
+        if email:
+            tile = _visible(page, f'div[data-test-id="{email}"]', timeout=1200)
+            if tile:
+                tile.click()
+                page.wait_for_load_state("networkidle")
+                continue
+
+        # 2FA code. Checked before password: when a saved session covers the
+        # password but not the second factor, this is the only field shown.
+        otc = _visible(page, 'input[name="otc"]', timeout=1200)
+        if otc:
+            if not totp_secret:
+                die(
+                    "Microsoft is asking for a 2FA code and no TOTP_SECRET is set. "
+                    "Add the TOTP secret as a secret, or re-run capture_session.py "
+                    "locally and refresh EDUARTE_SESSION_STATE."
+                )
+            otc.fill(pyotp.TOTP(totp_secret).now())
+            page.keyboard.press("Enter")
+            page.wait_for_load_state("networkidle")
+            continue
+
+        # Microsoft usually defaults to a push / number-match prompt ("Approve
+        # sign-in request"), which a script fundamentally cannot answer -- that
+        # approval happens on the phone. If a TOTP secret is configured, switch
+        # over to the "enter a verification code" option, which lands on the
+        # otc field handled above.
+        if _looks_like_push_prompt(page):
+            hint = (
+                "Microsoft is asking for approval in the Authenticator app. That "
+                "can't be automated -- approval happens on your phone. "
+            )
+            hint += (
+                "Set TOTP_SECRET (Authenticator also shows a 6-digit verification "
+                "code; get its seed at mysignins.microsoft.com/security-info by "
+                "adding a 'different authenticator app' and using \"Can't scan "
+                "image?\" to read the secret)."
+                if not totp_secret
+                else "Tried to switch to the verification-code option and could "
+                "not find it -- the account may be restricted to push approval."
+            )
+            if totp_secret and _switch_to_verification_code(page):
+                page.wait_for_load_state("networkidle")
+                continue
+            return hint
+
+        pwd = _visible(page, 'input[type="password"]', timeout=1200)
+        if pwd:
+            if not password:
+                die(
+                    "Microsoft is asking for a password and EDUARTE_PASSWORD is not "
+                    "set. Add it as a secret, or re-run capture_session.py locally "
+                    "and refresh EDUARTE_SESSION_STATE."
+                )
+            pwd.fill(password)
+            page.keyboard.press("Enter")
+            page.wait_for_load_state("networkidle")
+            continue
+
+        mail = _visible(page, 'input[type="email"], input[name="loginfmt"]', timeout=1200)
+        if mail:
+            if not email:
+                die(
+                    "Microsoft is asking who's signing in and EDUARTE_EMAIL is not "
+                    "set. Add it as a secret, or re-run capture_session.py locally "
+                    "and refresh EDUARTE_SESSION_STATE."
+                )
+            mail.fill(email)
+            page.keyboard.press("Enter")
+            page.wait_for_load_state("networkidle")
+            continue
+
+        # "Stay signed in?" -- saying yes is what makes the session last.
+        kmsi = _visible(page, "#idSIButton9", timeout=1200)
+        if kmsi:
+            kmsi.click()
+            page.wait_for_load_state("networkidle")
+            continue
+
+        # Nothing actionable on screen; give any in-flight redirect a moment.
+        try:
+            page.wait_for_url(SIGNED_IN_URL, timeout=8000)
+            return
+        except PlaywrightTimeout:
+            break
+
+
+def build_session() -> requests.Session:
+    """Get a requests session that's actually logged in to Educus.
+
+    The app's own session cookie (JSESSIONID) is a server-side session with a
+    short idle timeout -- it dies within hours of not being used, so between
+    two scheduled runs it's always dead. The Microsoft side of the login,
+    though, stays valid for months (a persistent auth cookie).
+
+    So rather than replaying the saved cookies directly, we hand them to a
+    real headless browser and let it re-do the OAuth/SAML handshake. Because
+    Microsoft still considers the account signed in, that usually completes
+    silently with no password and no MFA prompt. It has to be a browser: the
+    handoff is driven by Microsoft's client-side JavaScript, and replaying it
+    with plain HTTP just bounces between redirects forever.
+
+    If the saved session isn't enough any more, and credentials are
+    configured, sign_in() fills in whatever Microsoft still asks for so the
+    job can recover on its own instead of waiting for a fresh capture.
+
+    Once the browser is through, its fresh cookies are handed to requests and
+    the rest of the scrape runs over plain HTTP as before.
+    """
+    raw = os.environ.get("EDUARTE_SESSION_STATE")
+    email = os.environ.get("EDUARTE_EMAIL") or None
+    password = os.environ.get("EDUARTE_PASSWORD") or None
+    totp_secret = os.environ.get("TOTP_SECRET") or None
+
+    if not raw and not (email and password):
+        die(
+            "No way to sign in. Set EDUARTE_SESSION_STATE (from "
+            "scripts/capture_session.py), or EDUARTE_EMAIL + EDUARTE_PASSWORD "
+            "(plus TOTP_SECRET if the account uses an authenticator app)."
+        )
+
+    state_path = None
+    if raw:
+        try:
+            json.loads(raw)
+        except json.JSONDecodeError:
+            die("EDUARTE_SESSION_STATE does not contain valid JSON.")
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            handle.write(raw)
+            state_path = handle.name
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(storage_state=state_path)
+            page = context.new_page()
+            page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60000)
+
+            # The silent SSO hop can take a couple of redirects to settle.
+            hint = None
+            try:
+                page.wait_for_url(SIGNED_IN_URL, timeout=20000)
+            except PlaywrightTimeout:
+                hint = sign_in(page, email, password, totp_secret)
+
+            page.wait_for_load_state("networkidle")
+            final_url = page.url
+            cookies = context.cookies()
+            browser.close()
+    finally:
+        if state_path:
+            os.unlink(state_path)
+
+    if any(host in final_url for host in LOGIN_HOSTS):
+        die(
+            hint
+            or (
+                "Sign-in did not complete -- still stuck on the login page. If no "
+                "credentials are configured, set EDUARTE_EMAIL / EDUARTE_PASSWORD "
+                "(and TOTP_SECRET if 2FA is on); otherwise Microsoft may be "
+                "challenging this sign-in, and a fresh capture_session.py run plus "
+                "an updated EDUARTE_SESSION_STATE is the way back in."
+            )
+        )
 
     session = requests.Session()
-    for cookie in state["cookies"]:
+    for cookie in cookies:
         session.cookies.set(cookie["name"], cookie["value"], domain=cookie["domain"], path=cookie["path"])
     return session
 

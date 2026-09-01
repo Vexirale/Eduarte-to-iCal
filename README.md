@@ -35,10 +35,65 @@ the same links the site's own "next week" button uses.
    (re)writes `docs/roster.ics`. GitHub Pages serves that file at a stable
    URL your calendar app subscribes to and refreshes on its own schedule.
 
-When the saved session eventually expires (Educus bounces it back to the
-Microsoft login page), the daily workflow run fails on purpose instead of
-silently going stale -- GitHub will show the run as red / email you, and
-that's your signal to redo step 1.
+### Why the scheduled run needs a browser too
+
+Educus' own session cookie is a server-side session with a short idle
+timeout -- measured, it dies within a few hours of not being used, so
+between two scheduled runs it's always dead. The Microsoft half of the
+login is the durable part: its persistent auth cookie lasts months.
+
+So `fetch_roster.py` doesn't replay the saved cookies directly. It hands
+them to a headless browser and lets it redo the OAuth/SAML handshake,
+which completes **silently** -- no password, no MFA prompt -- because
+Microsoft still considers the account signed in. It has to be a real
+browser: that handoff is driven by Microsoft's client-side JavaScript,
+and replaying it over plain HTTP just bounces between redirects forever
+(verified -- it loops on `/reprocess` indefinitely). Once through, the
+browser's fresh cookies are handed to `requests` and the actual scrape
+runs over plain HTTP as before.
+
+The practical effect: one capture should last until the Microsoft
+persistent cookie expires (on the order of ~90 days) rather than hours.
+
+### Optional: let it recover on its own
+
+With only a saved session, an expiry means a red run and a manual
+re-capture. Set these extra secrets and the job signs itself back in
+instead, so it never needs you:
+
+| secret | needed? |
+|---|---|
+| `EDUARTE_EMAIL` | to answer "who's signing in" |
+| `EDUARTE_PASSWORD` | to answer the password prompt |
+| `TOTP_SECRET` | only if the account uses authenticator-app 2FA |
+
+**About Microsoft Authenticator.** Its default "approve on your phone /
+type the matching number" prompt **cannot be automated** -- there is no
+secret to store, the approval happens on the device. But the same app
+also exposes a rotating 6-digit *verification code*, which is ordinary
+TOTP and does work here. To get its seed: **[mysignins.microsoft.com/security-info](https://mysignins.microsoft.com/security-info)**
+-> Add sign-in method -> Authenticator app -> "I want to use a different
+authenticator app" -> **"Can't scan image?"**, which prints the secret as
+text. That's the value for `TOTP_SECRET`.
+
+Microsoft normally *shows* the push prompt first, so with a TOTP secret
+set the login clicks through "I can't use my Microsoft Authenticator app
+right now" -> "Use a verification code" to reach the code field. If your
+school restricts MFA to push approval only, that option won't exist and
+the session-capture route is the only one available.
+
+The saved session is still tried first and normally covers everything;
+these are only touched when Microsoft actually asks. The login step is
+detected from whatever is on screen at the time (account tile, 2FA code,
+password, email) rather than assuming a fixed sequence, since how far the
+saved session gets varies.
+
+Trade-off worth being deliberate about: `EDUARTE_PASSWORD` is your whole
+school Microsoft account, not just this timetable. Without it the worst
+case is a red run and five minutes of re-capturing.
+
+If sign-in can't complete, the run fails on purpose instead of silently
+going stale -- GitHub shows the run red / emails you.
 
 ## One-time setup
 

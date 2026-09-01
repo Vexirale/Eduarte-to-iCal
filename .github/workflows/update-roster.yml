@@ -24,11 +24,19 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests icalendar beautifulsoup4
+        run: |
+          pip install requests icalendar beautifulsoup4 playwright pyotp
+          playwright install --with-deps chromium
 
       - name: Fetch roster and build roster.ics
         env:
           EDUARTE_SESSION_STATE: ${{ secrets.EDUARTE_SESSION_STATE }}
+          # Optional. Only used if the saved session isn't enough on its own;
+          # with these set, the job recovers by itself instead of needing a
+          # fresh capture_session.py run.
+          EDUARTE_EMAIL: ${{ secrets.EDUARTE_EMAIL }}
+          EDUARTE_PASSWORD: ${{ secrets.EDUARTE_PASSWORD }}
+          TOTP_SECRET: ${{ secrets.TOTP_SECRET }}
         run: python scripts/fetch_roster.py
 
       - name: Commit and push if changed
