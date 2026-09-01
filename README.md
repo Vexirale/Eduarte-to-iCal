@@ -5,7 +5,9 @@ into a calendar feed you can subscribe to from Google Calendar, Apple
 Calendar, or Outlook, refreshed twice a day. When a lesson's room changes
 between two fetches, that lesson gets a "⚠️" prefix and a "Location changed:
 was X, now Y" note for one cycle, so a last-minute room swap doesn't get lost
-in a page you weren't about to re-check.
+in a page you weren't about to re-check. A cancelled lesson gets a "❌"
+prefix, a "Cancelled" note, and `STATUS:CANCELLED` (which Apple/Google
+Calendar typically render with strikethrough).
 
 ## How it works
 
@@ -113,3 +115,11 @@ Re-run step 1 and update the `EDUARTE_SESSION_STATE` secret with the new
 - The twice-daily schedule is fixed UTC and doesn't shift for Dutch DST --
   see the comment in `.github/workflows/update-roster.yml` if the run
   times drift an hour after a clock change.
+- Cancellation detection (`is_cancelled` / `CANCELLED_MARKERS` in
+  `fetch_roster.py`) looks for "vervallen" (and a few synonyms) in the
+  lesson's own classes, any of its descendants' classes, or its text --
+  this is the standard Dutch term across school scheduling systems, but it
+  hasn't been confirmed against a real cancelled lesson on this specific
+  site (there wasn't one in any session used while building this). If a
+  cancellation doesn't get flagged, check what the site actually shows for
+  one and adjust `CANCELLED_MARKERS` accordingly.
