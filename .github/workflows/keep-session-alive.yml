@@ -37,11 +37,13 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      # Pinned to main rather than the default branch: scheduled runs fire
-      # from whatever the default branch is, which isn't necessarily main.
+      # Whatever ref triggered this, deliberately not pinned to main: this
+      # job publishes nothing, it just reads a secret and sends one GET, so
+      # it should run the code it shipped with. (Pinning it to main also
+      # breaks any branch adding or changing this script, since main
+      # wouldn't have that version yet.) Only the roster job, which
+      # commits, needs to be pinned.
       - uses: actions/checkout@v4
-        with:
-          ref: main
 
       - uses: actions/setup-python@v5
         with:
