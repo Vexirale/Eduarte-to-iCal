@@ -3,12 +3,17 @@ name: Keep session alive
 # Educus kills its session on inactivity, so touch it regularly to stop it
 # going idle between the twice-daily roster fetches.
 #
-# Every 10 minutes, well under the idle timeout, because GitHub delays
-# scheduled workflows under load (often past their interval) so the real
-# gap is always larger than what's asked for here. Observed: the session
-# survives gaps of at least ~22 minutes and is gone after ~6 hours, so the
-# timeout is somewhere in between and may well be the usual 30 minutes.
-# Three attempts inside that window is the margin.
+# MEASURED: GitHub does not honour this schedule. With */10 configured,
+# the first observed window delivered 2 runs in 4.5 hours (19:27, 21:37)
+# where ~28 were due -- about 7%, with a 130-minute gap. GitHub delays and
+# drops scheduled workflows under load and short intervals fare worst.
+#
+# A 130-minute gap is far beyond the idle timeout (observed to be between
+# ~22 minutes and ~6 hours), so this cannot keep a session warm here, at
+# any interval. Kept because it's free and harmless while a session is
+# live, but anything relying on the session surviving needs a scheduler
+# that actually fires: cron, a systemd timer, or launchd on a real
+# machine.
 #
 # The margin matters more than it looks: this account's MFA is push
 # approval only (no third-party authenticator allowed), which a script

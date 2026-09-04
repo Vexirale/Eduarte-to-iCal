@@ -76,11 +76,21 @@ Its limits are worth knowing, because it is a mitigation and not a fix:
   a secret and a CI job can't write a fresh one back, so once the session
   does die, every later ping is talking to a dead session. Recovery is
   the roster workflow's job, via the browser sign-in.
-- **GitHub delays scheduled workflows under load**, often well past their
-  interval, so the real gap between pings is larger than 10 minutes. If a
-  gap ever exceeds the server's idle timeout, the session is gone. (The
-  timeout is somewhere between ~22 minutes and ~6 hours based on observed
-  runs, quite possibly the usual 30, hence three attempts inside it.)
+- **GitHub does not honour this schedule, and measurably so.** With
+  `*/10` configured, the first observed window delivered **2 runs in 4.5
+  hours** (19:27 and 21:37) where ~28 were due: roughly 7%, with a
+  130-minute gap. GitHub delays and drops scheduled workflows under load,
+  and short intervals fare worst.
+
+  That gap is far beyond the idle timeout (somewhere between ~22 minutes
+  and ~6 hours based on observed runs, quite possibly the usual 30). So
+  **on GitHub Actions this approach does not work** -- it cannot ping
+  often enough to keep a session warm, whatever interval is configured.
+
+  It's kept because it costs nothing and does no harm when a session is
+  live. But anything depending on the session surviving needs a scheduler
+  that actually fires: real cron, systemd timers, or launchd on a machine
+  you control.
 
 It exits successfully even when the session is dead, on purpose: on this
 schedule, failing here would mean dozens of red runs a day drowning out
