@@ -57,10 +57,18 @@ persistent cookie expires (on the order of ~90 days) rather than hours.
 
 ### Keeping the session from dying in the first place
 
-`.github/workflows/keep-session-alive.yml` pings the agenda page every 15
+`.github/workflows/keep-session-alive.yml` pings the agenda page every 10
 minutes so the session never goes idle between the twice-daily fetches.
 It's deliberately tiny (one GET, `requests` only, no browser) since it
 runs a lot.
+
+On this account this is not a nicety, it's the whole strategy. MFA here
+is Microsoft Authenticator push approval, and Summa doesn't permit
+third-party authenticator apps, so there's no TOTP secret to store and a
+script can never answer the prompt. Measured: a fresh session signed in
+fine, and ~12 hours later every run was hitting the push prompt. Keeping
+the session from ever dying is the only way to avoid needing to sign in
+at all.
 
 Its limits are worth knowing, because it is a mitigation and not a fix:
 
@@ -69,8 +77,10 @@ Its limits are worth knowing, because it is a mitigation and not a fix:
   does die, every later ping is talking to a dead session. Recovery is
   the roster workflow's job, via the browser sign-in.
 - **GitHub delays scheduled workflows under load**, often well past their
-  interval, so the real gap between pings is larger than 15 minutes. If a
-  gap ever exceeds the server's idle timeout, the session is gone.
+  interval, so the real gap between pings is larger than 10 minutes. If a
+  gap ever exceeds the server's idle timeout, the session is gone. (The
+  timeout is somewhere between ~22 minutes and ~6 hours based on observed
+  runs, quite possibly the usual 30, hence three attempts inside it.)
 
 It exits successfully even when the session is dead, on purpose: on this
 schedule, failing here would mean dozens of red runs a day drowning out
@@ -137,6 +147,17 @@ This produces `session_state.json`.
 In this repo: **Settings -> Secrets and variables -> Actions -> New repository
 secret**, name it `EDUARTE_SESSION_STATE`, and paste the entire contents of
 `session_state.json` as the value.
+
+### 2b. Make `main` the default branch
+
+**Settings -> General -> Default branch**, set it to `main`.
+
+Scheduled workflows only ever run from the repo's default branch. If it
+isn't `main`, the scheduled runs execute a different branch's code, and
+GitHub Pages (serving `main/docs`) never sees the updated `roster.ics`.
+Both workflows now check out `main` explicitly and push to it, so a stale
+default branch can't silently publish to the wrong place, but setting the
+default correctly avoids the confusion entirely.
 
 ### 3. Enable GitHub Pages
 

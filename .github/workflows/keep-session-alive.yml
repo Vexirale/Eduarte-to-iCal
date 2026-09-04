@@ -3,19 +3,25 @@ name: Keep session alive
 # Educus kills its session on inactivity, so touch it regularly to stop it
 # going idle between the twice-daily roster fetches.
 #
-# 15 minutes rather than something closer to the (unknown, but at least
-# tens-of-minutes) idle timeout, because GitHub delays scheduled workflows
-# under load -- often well past their interval -- so the real gap between
-# runs is always larger than what's asked for here. The margin is the
-# point.
+# Every 10 minutes, well under the idle timeout, because GitHub delays
+# scheduled workflows under load (often past their interval) so the real
+# gap is always larger than what's asked for here. Observed: the session
+# survives gaps of at least ~22 minutes and is gone after ~6 hours, so the
+# timeout is somewhere in between and may well be the usual 30 minutes.
+# Three attempts inside that window is the margin.
+#
+# The margin matters more than it looks: this account's MFA is push
+# approval only (no third-party authenticator allowed), which a script
+# cannot answer. So once this session dies it cannot be recovered
+# automatically at all -- it needs a manual capture_session.py run. Every
+# missed ping is a real risk of that.
 #
 # This only keeps an already-live session alive; it can't create a new one
-# (see scripts/keep_alive.py). Recovering a dead session is the roster
-# workflow's job.
+# (see scripts/keep_alive.py).
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch: {}
 
 # Read-only: this job only sends a GET, it never writes to the repo.
@@ -31,7 +37,11 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
+      # Pinned to main rather than the default branch: scheduled runs fire
+      # from whatever the default branch is, which isn't necessarily main.
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - uses: actions/setup-python@v5
         with:
