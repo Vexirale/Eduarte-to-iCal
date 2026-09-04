@@ -55,6 +55,27 @@ runs over plain HTTP as before.
 The practical effect: one capture should last until the Microsoft
 persistent cookie expires (on the order of ~90 days) rather than hours.
 
+### Keeping the session from dying in the first place
+
+`.github/workflows/keep-session-alive.yml` pings the agenda page every 15
+minutes so the session never goes idle between the twice-daily fetches.
+It's deliberately tiny (one GET, `requests` only, no browser) since it
+runs a lot.
+
+Its limits are worth knowing, because it is a mitigation and not a fix:
+
+- **It can only keep alive a session it was given.** The cookie lives in
+  a secret and a CI job can't write a fresh one back, so once the session
+  does die, every later ping is talking to a dead session. Recovery is
+  the roster workflow's job, via the browser sign-in.
+- **GitHub delays scheduled workflows under load**, often well past their
+  interval, so the real gap between pings is larger than 15 minutes. If a
+  gap ever exceeds the server's idle timeout, the session is gone.
+
+It exits successfully even when the session is dead, on purpose: on this
+schedule, failing here would mean dozens of red runs a day drowning out
+the roster workflow, which is the one that actually matters.
+
 ### Optional: let it recover on its own
 
 With only a saved session, an expiry means a red run and a manual
