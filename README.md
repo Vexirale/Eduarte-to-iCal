@@ -197,8 +197,33 @@ before waiting for the first scheduled run.
 
 ## When the session expires
 
-Re-run step 1 and update the `EDUARTE_SESSION_STATE` secret with the new
-`session_state.json` contents. Everything else keeps working as-is.
+```bash
+python scripts/capture_session.py
+```
+
+Log in, approve on your phone, press Enter. If you have the [GitHub
+CLI](https://cli.github.com) installed and authenticated, that also
+updates the `EDUARTE_SESSION_STATE` secret and starts a roster run, so
+recovery is one command. Without `gh` it just writes the file and tells
+you where to paste it.
+
+**This will need doing periodically, and that's a dead end rather than a
+bug.** The session dies after a few hours idle, and nothing can renew it
+unattended:
+
+- Silent SSO doesn't survive: measured, a fresh session was signing in
+  fine and ~12 hours later every run hit the login prompt.
+- Password login gets accepted, then stops at Microsoft Authenticator
+  push approval, which happens on a phone and cannot be scripted.
+- No TOTP fallback: Summa doesn't permit third-party authenticator apps,
+  so there's no seed to store.
+- Pinging to keep the session warm doesn't work on GitHub Actions, which
+  delivered ~7% of a `*/10` schedule (see above).
+
+The way out, if it ever becomes worth it, is running the fetch on a
+machine you control: real cron fires when it says it will, a residential
+IP is far less likely to be challenged, and the refreshed session can be
+written straight back to disk instead of round-tripping through a secret.
 
 ## Notes on the scraper
 
