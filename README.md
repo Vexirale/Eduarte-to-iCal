@@ -2,12 +2,23 @@
 
 Turns your Summa College Eduarte timetable (subject, room, teacher, duration)
 into a calendar feed you can subscribe to from Google Calendar, Apple
-Calendar, or Outlook, refreshed twice a day. When a lesson's room changes
-between two fetches, that lesson gets a "⚠️" prefix and a "Location changed:
-was X, now Y" note for one cycle, so a last-minute room swap doesn't get lost
-in a page you weren't about to re-check. A cancelled lesson gets a "❌"
-prefix, a "Cancelled" note, and `STATUS:CANCELLED` (which Apple/Google
-Calendar typically render with strikethrough).
+Calendar, or Outlook. When a lesson's room changes between two fetches,
+that lesson gets a "⚠️" prefix and a "Location changed: was X, now Y" note
+for one cycle. A cancelled lesson gets a "❌" prefix, a "Cancelled" note,
+and `STATUS:CANCELLED` (which Apple/Google Calendar typically render with
+strikethrough).
+
+> **Refreshing is manual, by necessity.** Run
+> `python scripts/capture_session.py` when you want the calendar brought
+> up to date. The feed keeps serving the last fetch in between, which is
+> usually fine since a timetable changes rarely, but it won't pick up a
+> same-day room change on its own.
+>
+> This isn't a missing feature, it's a wall. The Educus session lasts
+> about **an hour** (measured: signed in 11:12, dead by 12:17), and
+> renewing it needs Microsoft Authenticator push approval, which happens
+> on a phone and cannot be scripted. Every unattended workaround was tried
+> and measured; see [Why it can't run itself](#why-it-cant-run-itself).
 
 ## How it works
 
@@ -30,12 +41,12 @@ the same links the site's own "next week" button uses.
    `scripts/capture_session.py` opens locally. You handle the Microsoft
    login and any MFA prompt like you always do. The script then saves the
    resulting session.
-2. **A GitHub Actions workflow runs twice daily** (08:25 and 11:00 CEST),
-   reuses that saved session (no login needed), reads your timetable, and
-   (re)writes `docs/roster.ics`. GitHub Pages serves that file at a stable
-   URL your calendar app subscribes to and refreshes on its own schedule.
+2. **A GitHub Actions workflow reads your timetable** using that saved
+   session and (re)writes `docs/roster.ics`. GitHub Pages serves that file
+   at a stable URL your calendar app subscribes to. `capture_session.py`
+   starts this run for you, so step 1 is the whole procedure.
 
-### Why the scheduled run needs a browser too
+### Why the fetch needs a browser too
 
 Educus' own session cookie is a server-side session with a short idle
 timeout -- measured, it dies within a few hours of not being used, so
@@ -52,89 +63,63 @@ and replaying it over plain HTTP just bounces between redirects forever
 browser's fresh cookies are handed to `requests` and the actual scrape
 runs over plain HTTP as before.
 
-The practical effect: one capture should last until the Microsoft
-persistent cookie expires (on the order of ~90 days) rather than hours.
+## Why it can't run itself
 
-### Keeping the session from dying in the first place
+Every unattended approach was built, run against the real site, and
+measured. All four failed, for different reasons:
 
-`.github/workflows/keep-session-alive.yml` pings the agenda page every 10
-minutes so the session never goes idle between the twice-daily fetches.
-It's deliberately tiny (one GET, `requests` only, no browser) since it
-runs a lot.
+**1. Reuse the saved session on a schedule.** The Educus session is killed
+by inactivity. Signed in at 11:12, already dead by 12:17, so it lasts
+about **an hour**. Any schedule sparse enough to be reasonable lands after
+it's gone. Sixteen consecutive scheduled runs failed this way.
 
-On this account this is not a nicety, it's the whole strategy. MFA here
-is Microsoft Authenticator push approval, and Summa doesn't permit
-third-party authenticator apps, so there's no TOTP secret to store and a
-script can never answer the prompt. Measured: a fresh session signed in
-fine, and ~12 hours later every run was hitting the push prompt. Keeping
-the session from ever dying is the only way to avoid needing to sign in
-at all.
+**2. Let the browser re-do the SSO silently.** Worth a real try: Microsoft
+still reports `"isSignedIn": true` long after the Educus session dies, and
+its persistent cookie lasts months. But it doesn't hold from CI. A fresh
+session signed in fine at 23:19 and by 11:32 the next morning every run
+was landing on the login prompt, most likely because a datacenter IP that
+changes every run is exactly what risk-based Conditional Access is
+looking for.
 
-Its limits are worth knowing, because it is a mitigation and not a fix:
+**3. Sign in with stored credentials.** `EDUARTE_EMAIL` and
+`EDUARTE_PASSWORD` are accepted, and then it stops dead at Microsoft
+Authenticator **push approval**, which happens on a phone. There is no
+secret that answers it.
 
-- **It can only keep alive a session it was given.** The cookie lives in
-  a secret and a CI job can't write a fresh one back, so once the session
-  does die, every later ping is talking to a dead session. Recovery is
-  the roster workflow's job, via the browser sign-in.
-- **GitHub does not honour this schedule, and measurably so.** With
-  `*/10` configured, the first observed window delivered **2 runs in 4.5
-  hours** (19:27 and 21:37) where ~28 were due: roughly 7%, with a
-  130-minute gap. GitHub delays and drops scheduled workflows under load,
-  and short intervals fare worst.
-
-  That gap is far beyond the idle timeout (somewhere between ~22 minutes
-  and ~6 hours based on observed runs, quite possibly the usual 30). So
-  **on GitHub Actions this approach does not work** -- it cannot ping
-  often enough to keep a session warm, whatever interval is configured.
-
-  It's kept because it costs nothing and does no harm when a session is
-  live. But anything depending on the session surviving needs a scheduler
-  that actually fires: real cron, systemd timers, or launchd on a machine
-  you control.
-
-It exits successfully even when the session is dead, on purpose: on this
-schedule, failing here would mean dozens of red runs a day drowning out
-the roster workflow, which is the one that actually matters.
-
-### Optional: let it recover on its own
-
-With only a saved session, an expiry means a red run and a manual
-re-capture. Set these extra secrets and the job signs itself back in
-instead, so it never needs you:
-
-| secret | needed? |
-|---|---|
-| `EDUARTE_EMAIL` | to answer "who's signing in" |
-| `EDUARTE_PASSWORD` | to answer the password prompt |
-| `TOTP_SECRET` | only if the account uses authenticator-app 2FA |
-
-**About Microsoft Authenticator.** Its default "approve on your phone /
-type the matching number" prompt **cannot be automated** -- there is no
-secret to store, the approval happens on the device. But the same app
-also exposes a rotating 6-digit *verification code*, which is ordinary
-TOTP and does work here. To get its seed: **[mysignins.microsoft.com/security-info](https://mysignins.microsoft.com/security-info)**
+Authenticator also exposes a rotating 6-digit code, which is ordinary
+TOTP and *would* work, via
+[mysignins.microsoft.com/security-info](https://mysignins.microsoft.com/security-info)
 -> Add sign-in method -> Authenticator app -> "I want to use a different
-authenticator app" -> **"Can't scan image?"**, which prints the secret as
-text. That's the value for `TOTP_SECRET`.
+authenticator app" -> "Can't scan image?". **Summa blocks third-party
+authenticator apps**, so that option isn't offered and no seed exists.
+(The code still handles this path, in case that policy ever changes.)
 
-Microsoft normally *shows* the push prompt first, so with a TOTP secret
-set the login clicks through "I can't use my Microsoft Authenticator app
-right now" -> "Use a verification code" to reach the code field. If your
-school restricts MFA to push approval only, that option won't exist and
-the session-capture route is the only one available.
+**4. Ping constantly so the session never goes idle.** Fails on GitHub's
+scheduler, not on the idea. With `*/10` configured, the actual delivery
+was 6 runs in 14 hours:
 
-The saved session is still tried first and normally covers everything;
-these are only touched when Microsoft actually asks. The login step is
-detected from whatever is on screen at the time (account tile, 2FA code,
-password, email) rather than assuming a fixed sequence, since how far the
-saved session gets varies.
+```
+19:27 → 21:37 → 23:17 → 01:01 → 05:36 → 09:18
+gaps:   2h10m   1h40m   1h44m   4h35m   3h42m
+```
 
-Trade-off worth being deliberate about: `EDUARTE_PASSWORD` is your whole
-school Microsoft account, not just this timetable. Without it the worst
-case is a red run and five minutes of re-capturing.
+Roughly 7% of schedule, with typical gaps 2 to 4 times longer than the
+session's entire lifetime, and zero pings during the hour it actually
+died. GitHub delays and drops scheduled workflows under load, and short
+intervals fare worst. This job was removed once measured.
 
-If sign-in can't complete, the run fails on purpose instead of silently
-going stale -- GitHub shows the run red / emails you.
+### What would actually fix it
+
+Running the fetch on a machine you control, which beats all four at once:
+real cron fires when it says it will, a residential IP is far less likely
+to be challenged (the account's own token showed `amr: ["pwd"]`, no MFA,
+from a normal network), the refreshed session can be written straight back
+to disk instead of round-tripping through a CI secret, and if it ever does
+prompt, the approval lands on your phone while you're right there.
+
+Anything always-on works: a Raspberry Pi, a mini PC, a desktop that stays
+awake. A VPS gets the reliable cron but keeps the datacenter-IP problem,
+so it may hit wall #2 again.
 
 ## One-time setup
 
@@ -195,35 +180,23 @@ every few hours), on top of the daily GitHub Actions run that keeps
 Actions tab -> "Update roster.ics" -> Run workflow, to confirm it works
 before waiting for the first scheduled run.
 
-## When the session expires
+## Refreshing the calendar
 
 ```bash
 python scripts/capture_session.py
 ```
 
-Log in, approve on your phone, press Enter. If you have the [GitHub
+Log in, approve on your phone, press Enter. With the [GitHub
 CLI](https://cli.github.com) installed and authenticated, that also
-updates the `EDUARTE_SESSION_STATE` secret and starts a roster run, so
-recovery is one command. Without `gh` it just writes the file and tells
-you where to paste it.
+updates the `EDUARTE_SESSION_STATE` secret and starts the roster run, so
+this one command is the whole procedure. Without `gh` it writes the file
+and tells you where to paste it.
 
-**This will need doing periodically, and that's a dead end rather than a
-bug.** The session dies after a few hours idle, and nothing can renew it
-unattended:
-
-- Silent SSO doesn't survive: measured, a fresh session was signing in
-  fine and ~12 hours later every run hit the login prompt.
-- Password login gets accepted, then stops at Microsoft Authenticator
-  push approval, which happens on a phone and cannot be scripted.
-- No TOTP fallback: Summa doesn't permit third-party authenticator apps,
-  so there's no seed to store.
-- Pinging to keep the session warm doesn't work on GitHub Actions, which
-  delivered ~7% of a `*/10` schedule (see above).
-
-The way out, if it ever becomes worth it, is running the fetch on a
-machine you control: real cron fires when it says it will, a residential
-IP is far less likely to be challenged, and the refreshed session can be
-written straight back to disk instead of round-tripping through a secret.
+Between refreshes the feed keeps serving the last fetch, so your calendar
+stays populated with several weeks of lessons; it just won't reflect a
+change made at school since. See [Why it can't run
+itself](#why-it-cant-run-itself) for why this step can't be automated
+away.
 
 ## Notes on the scraper
 
