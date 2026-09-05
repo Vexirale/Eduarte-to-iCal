@@ -1,0 +1,63 @@
+name: Keep session alive
+
+# Educus kills its session on inactivity, so touch it regularly to stop it
+# going idle between the twice-daily roster fetches.
+#
+# MEASURED: GitHub does not honour this schedule. With */10 configured,
+# the first observed window delivered 2 runs in 4.5 hours (19:27, 21:37)
+# where ~28 were due -- about 7%, with a 130-minute gap. GitHub delays and
+# drops scheduled workflows under load and short intervals fare worst.
+#
+# A 130-minute gap is far beyond the idle timeout (observed to be between
+# ~22 minutes and ~6 hours), so this cannot keep a session warm here, at
+# any interval. Kept because it's free and harmless while a session is
+# live, but anything relying on the session surviving needs a scheduler
+# that actually fires: cron, a systemd timer, or launchd on a real
+# machine.
+#
+# The margin matters more than it looks: this account's MFA is push
+# approval only (no third-party authenticator allowed), which a script
+# cannot answer. So once this session dies it cannot be recovered
+# automatically at all -- it needs a manual capture_session.py run. Every
+# missed ping is a real risk of that.
+#
+# This only keeps an already-live session alive; it can't create a new one
+# (see scripts/keep_alive.py).
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+# Read-only: this job only sends a GET, it never writes to the repo.
+permissions:
+  contents: read
+
+concurrency:
+  # A backlog of delayed pings is worthless -- only the newest matters.
+  group: keep-session-alive
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      # Whatever ref triggered this, deliberately not pinned to main: this
+      # job publishes nothing, it just reads a secret and sends one GET, so
+      # it should run the code it shipped with. (Pinning it to main also
+      # breaks any branch adding or changing this script, since main
+      # wouldn't have that version yet.) Only the roster job, which
+      # commits, needs to be pinned.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Ping the agenda page
+        env:
+          EDUARTE_SESSION_STATE: ${{ secrets.EDUARTE_SESSION_STATE }}
+        run: python scripts/keep_alive.py

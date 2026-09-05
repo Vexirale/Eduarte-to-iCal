@@ -17,7 +17,13 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
+      # Explicitly main, not the default branch. Scheduled runs fire from
+      # the repo's default branch, and if that isn't main, roster.ics gets
+      # committed somewhere GitHub Pages isn't serving from and the
+      # published feed silently goes stale.
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - uses: actions/setup-python@v5
         with:
@@ -46,7 +52,8 @@ jobs:
           git add docs/roster.ics
           if ! git diff --cached --quiet -- docs/roster.ics; then
             git commit -m "Update roster.ics"
-            git push
+            # Explicit target: never let this land on a branch Pages isn't serving.
+            git push origin HEAD:main
           else
             echo "No changes to roster.ics"
           fi

@@ -55,6 +55,47 @@ runs over plain HTTP as before.
 The practical effect: one capture should last until the Microsoft
 persistent cookie expires (on the order of ~90 days) rather than hours.
 
+### Keeping the session from dying in the first place
+
+`.github/workflows/keep-session-alive.yml` pings the agenda page every 10
+minutes so the session never goes idle between the twice-daily fetches.
+It's deliberately tiny (one GET, `requests` only, no browser) since it
+runs a lot.
+
+On this account this is not a nicety, it's the whole strategy. MFA here
+is Microsoft Authenticator push approval, and Summa doesn't permit
+third-party authenticator apps, so there's no TOTP secret to store and a
+script can never answer the prompt. Measured: a fresh session signed in
+fine, and ~12 hours later every run was hitting the push prompt. Keeping
+the session from ever dying is the only way to avoid needing to sign in
+at all.
+
+Its limits are worth knowing, because it is a mitigation and not a fix:
+
+- **It can only keep alive a session it was given.** The cookie lives in
+  a secret and a CI job can't write a fresh one back, so once the session
+  does die, every later ping is talking to a dead session. Recovery is
+  the roster workflow's job, via the browser sign-in.
+- **GitHub does not honour this schedule, and measurably so.** With
+  `*/10` configured, the first observed window delivered **2 runs in 4.5
+  hours** (19:27 and 21:37) where ~28 were due: roughly 7%, with a
+  130-minute gap. GitHub delays and drops scheduled workflows under load,
+  and short intervals fare worst.
+
+  That gap is far beyond the idle timeout (somewhere between ~22 minutes
+  and ~6 hours based on observed runs, quite possibly the usual 30). So
+  **on GitHub Actions this approach does not work** -- it cannot ping
+  often enough to keep a session warm, whatever interval is configured.
+
+  It's kept because it costs nothing and does no harm when a session is
+  live. But anything depending on the session surviving needs a scheduler
+  that actually fires: real cron, systemd timers, or launchd on a machine
+  you control.
+
+It exits successfully even when the session is dead, on purpose: on this
+schedule, failing here would mean dozens of red runs a day drowning out
+the roster workflow, which is the one that actually matters.
+
 ### Optional: let it recover on its own
 
 With only a saved session, an expiry means a red run and a manual
@@ -117,6 +158,17 @@ In this repo: **Settings -> Secrets and variables -> Actions -> New repository
 secret**, name it `EDUARTE_SESSION_STATE`, and paste the entire contents of
 `session_state.json` as the value.
 
+### 2b. Make `main` the default branch
+
+**Settings -> General -> Default branch**, set it to `main`.
+
+Scheduled workflows only ever run from the repo's default branch. If it
+isn't `main`, the scheduled runs execute a different branch's code, and
+GitHub Pages (serving `main/docs`) never sees the updated `roster.ics`.
+Both workflows now check out `main` explicitly and push to it, so a stale
+default branch can't silently publish to the wrong place, but setting the
+default correctly avoids the confusion entirely.
+
 ### 3. Enable GitHub Pages
 
 **Settings -> Pages -> Source: Deploy from a branch -> Branch: `main`,
@@ -145,8 +197,33 @@ before waiting for the first scheduled run.
 
 ## When the session expires
 
-Re-run step 1 and update the `EDUARTE_SESSION_STATE` secret with the new
-`session_state.json` contents. Everything else keeps working as-is.
+```bash
+python scripts/capture_session.py
+```
+
+Log in, approve on your phone, press Enter. If you have the [GitHub
+CLI](https://cli.github.com) installed and authenticated, that also
+updates the `EDUARTE_SESSION_STATE` secret and starts a roster run, so
+recovery is one command. Without `gh` it just writes the file and tells
+you where to paste it.
+
+**This will need doing periodically, and that's a dead end rather than a
+bug.** The session dies after a few hours idle, and nothing can renew it
+unattended:
+
+- Silent SSO doesn't survive: measured, a fresh session was signing in
+  fine and ~12 hours later every run hit the login prompt.
+- Password login gets accepted, then stops at Microsoft Authenticator
+  push approval, which happens on a phone and cannot be scripted.
+- No TOTP fallback: Summa doesn't permit third-party authenticator apps,
+  so there's no seed to store.
+- Pinging to keep the session warm doesn't work on GitHub Actions, which
+  delivered ~7% of a `*/10` schedule (see above).
+
+The way out, if it ever becomes worth it, is running the fetch on a
+machine you control: real cron fires when it says it will, a residential
+IP is far less likely to be challenged, and the refreshed session can be
+written straight back to disk instead of round-tripping through a secret.
 
 ## Notes on the scraper
 
