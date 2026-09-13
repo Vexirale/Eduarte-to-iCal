@@ -1,13 +1,17 @@
 name: Update roster.ics
 
+# Manual only. There was a twice-daily schedule; it was removed because it
+# could not ever succeed.
+#
+# Measured: the Educus session lasts about an hour (signed in 11:12,
+# already dead by 12:17), and it cannot be renewed unattended because
+# Microsoft Authenticator push approval happens on a phone. So any
+# scheduled run lands long after the session is gone and fails. Sixteen
+# consecutive scheduled runs failed that way.
+#
+# scripts/capture_session.py triggers this workflow itself right after
+# capturing a fresh session, which is the one moment it can succeed.
 on:
-  schedule:
-    # 06:25 UTC = 08:25 CEST, 09:00 UTC = 11:00 CEST.
-    # GitHub Actions cron is fixed UTC and doesn't shift for DST -- once the
-    # Netherlands drops to CET (UTC+1, late Oct), these run an hour later
-    # local time (09:25 / 12:00) until adjusted here by hand.
-    - cron: "25 6 * * *"
-    - cron: "0 9 * * *"
   workflow_dispatch: {}
 
 permissions:
