@@ -3,3 +3,5 @@ debug_capture.json
 __pycache__/
 *.pyc
 .venv/
+tokens.json
+explore_out/
