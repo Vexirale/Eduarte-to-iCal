@@ -1,5 +1,3 @@
-playwright>=1.47
-icalendar>=5.0
 requests>=2.32
-pyotp>=2.9
-beautifulsoup4>=4.12
+icalendar>=5.0
+playwright>=1.47
