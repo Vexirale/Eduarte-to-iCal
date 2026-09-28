@@ -1,30 +1,31 @@
 name: Update roster.ics
 
-# Manual only. There was a twice-daily schedule; it was removed because it
-# could not ever succeed.
+# Runs on a schedule now. The old version couldn't: it depended on a web
+# session that died after an hour. This one signs in with the Eduarte app's
+# refresh token (60 days, rotates on every use), which never goes through
+# Microsoft, so no MFA and nothing to expire between runs.
 #
-# Measured: the Educus session lasts about an hour (signed in 11:12,
-# already dead by 12:17), and it cannot be renewed unattended because
-# Microsoft Authenticator push approval happens on a phone. So any
-# scheduled run lands long after the session is gone and fails. Sixteen
-# consecutive scheduled runs failed that way.
-#
-# scripts/capture_session.py triggers this workflow itself right after
-# capturing a fresh session, which is the one moment it can succeed.
+# GitHub delays scheduled runs under load, so these times are approximate.
+# That's fine: every run fetches the full next few weeks.
 on:
+  schedule:
+    - cron: "13 4-20/2 * * *"   # roughly every 2 hours, 06:00-22:00 Dutch summer time
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
+# Two runs at once would both use the same refresh token, and the loser
+# would be left holding a revoked one. Queue them instead.
+concurrency:
+  group: roster
+  cancel-in-progress: false
+
 jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      # Explicitly main, not the default branch. Scheduled runs fire from
-      # the repo's default branch, and if that isn't main, roster.ics gets
-      # committed somewhere GitHub Pages isn't serving from and the
-      # published feed silently goes stale.
+      # Explicitly main: GitHub Pages serves main/docs.
       - uses: actions/checkout@v4
         with:
           ref: main
@@ -34,19 +35,17 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          pip install requests icalendar beautifulsoup4 playwright pyotp
-          playwright install --with-deps chromium
+        run: pip install requests icalendar
 
       - name: Fetch roster and build roster.ics
         env:
-          EDUARTE_SESSION_STATE: ${{ secrets.EDUARTE_SESSION_STATE }}
-          # Optional. Only used if the saved session isn't enough on its own;
-          # with these set, the job recovers by itself instead of needing a
-          # fresh capture_session.py run.
-          EDUARTE_EMAIL: ${{ secrets.EDUARTE_EMAIL }}
-          EDUARTE_PASSWORD: ${{ secrets.EDUARTE_PASSWORD }}
-          TOTP_SECRET: ${{ secrets.TOTP_SECRET }}
+          EDUARTE_REFRESH_TOKEN: ${{ secrets.EDUARTE_REFRESH_TOKEN }}
+          # Fine-grained PAT for this repo with "Secrets: read and write",
+          # used to store the rotated refresh token back. The built-in
+          # GITHUB_TOKEN isn't allowed to write secrets.
+          GH_TOKEN: ${{ secrets.SECRETS_PAT }}
+          GH_REPO: ${{ github.repository }}
+          ROTATE_SECRET: "1"
         run: python scripts/fetch_roster.py
 
       - name: Commit and push if changed
@@ -56,7 +55,6 @@ jobs:
           git add docs/roster.ics
           if ! git diff --cached --quiet -- docs/roster.ics; then
             git commit -m "Update roster.ics"
-            # Explicit target: never let this land on a branch Pages isn't serving.
             git push origin HEAD:main
           else
             echo "No changes to roster.ics"
