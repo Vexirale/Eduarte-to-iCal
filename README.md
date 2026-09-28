@@ -31,6 +31,10 @@ straight away.
 | `/afspraak?deelnemer=…&isoWeek=…` | the week's lessons, paged with `Range: items=a-b` |
 | `/deelnemer/{id}/afspraakwijzigingen` | cancellations, room and time changes |
 
+Summa publishes the timetable one week at a time, so the feed usually only
+has the current week ahead of you. The script asks for 4 weeks anyway, so
+the next week shows up on its own as soon as it's published.
+
 **Privacy.** Every lesson the API returns also lists all classmates in it,
 including names, birth dates and photo links. `fetch_roster.py` reads only the
 lesson's own fields plus the teacher's abbreviation. Classmate data never
@@ -107,3 +111,21 @@ Environment variables for `fetch_roster.py`:
 | `WEEKS_AHEAD` | 4 | weeks fetched, starting this week |
 | `HISTORY_WEEKS` | 8 | how long past lessons stay in the feed |
 | `OUTPUT_PATH` | `docs/roster.ics` | where the feed is written |
+
+## How it got here
+
+The first version scraped the Eduarte web portal with a headless browser.
+That kept failing because the portal session dies after about an hour and
+renewing it needs a Microsoft Authenticator push on a phone.
+
+The switch to the app API was worked out together with
+[Claude](https://claude.ai) (Anthropic): capturing the app's login in HTTP
+Toolkit, spotting that the app is Flutter (which is why its traffic skipped
+the proxy), pulling the API endpoints out of the app's strings, and writing
+`app_login.py`, `fetch_roster.py` and the workflow. Every test ran on my own
+account.
+
+Along the way it turned out the roster endpoint also returns classmates'
+personal data to student accounts. That was reported to Topicus as a
+responsible disclosure, and this project deliberately never reads or stores
+that data.
