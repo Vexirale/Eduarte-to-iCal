@@ -94,8 +94,27 @@ def store_refresh_token(token: str, source: str) -> None:
     print(f"Saved the rotated refresh token to the {SECRET_NAME} secret.")
 
 
+def check_can_save_secret() -> None:
+    """Fail before refreshing if the rotated token couldn't be saved afterwards.
+
+    Refreshing revokes the old token, so finding out only afterwards that
+    the secret can't be written leaves nothing valid behind.
+    """
+    if not os.environ.get("GH_TOKEN"):
+        die("GH_TOKEN is empty, so the rotated token couldn't be saved. Add the SECRETS_PAT "
+            "secret (fine-grained token, Secrets: Read and write). The stored token is untouched.")
+    try:
+        subprocess.run(["gh", "secret", "list"], check=True, capture_output=True, text=True)
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        detail = getattr(e, "stderr", "") or str(e)
+        die(f"SECRETS_PAT can't read this repo's secrets ({detail.strip()}). Give it "
+            "'Secrets: Read and write' on this repo. The stored token is untouched.")
+
+
 def access_token() -> str:
     refresh, source = load_refresh_token()
+    if source == "env" and os.environ.get("ROTATE_SECRET") == "1":
+        check_can_save_secret()
     r = requests.post(TOKEN_URL, data={
         "grant_type": "refresh_token",
         "refresh_token": refresh,
