@@ -1,6 +1,6 @@
 # Eduarte-to-iCal
 
-Turns your Summa College Eduarte timetable into a calendar feed you can
+Turns your Eduarte timetable into a calendar feed you can
 subscribe to from Apple Calendar, Google Calendar or Outlook. It updates by
 itself, every couple of hours, with no logging in.
 
